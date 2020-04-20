@@ -1,0 +1,253 @@
+---
+title: "Project"
+author: "Ivan Leung"
+date: "May 17, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE);
+library(Matching)
+```
+
+Load data
+```{r}
+DF = read.csv("data_2.csv",header=T)
+DF = DF[rowSums(is.na(DF))==0,]
+nrow(DF)
+```
+Reassign groups
+```{r}
+col_names = colnames(DF)
+DF0 = DF[DF$Performance >= 6,-5]
+DF0 = cbind(DF0, as.factor(rep(0,nrow(DF0))))
+colnames(DF0) = col_names
+DF1 = DF[DF$Performance < 6,-5]
+DF1 = cbind(DF1, as.factor(rep(1,nrow(DF1))))
+colnames(DF1) = col_names
+DF = as.data.frame(rbind(DF0,DF1))
+```
+
+the formatted data
+```{r}
+head(DF0)
+head(DF1)
+```
+
+Visualize the data with histograms
+```{r}
+for (i in 1:(ncol(DF)-1)){
+  boxplot(DF[,i]~DF$Performance, xlab="Group",
+          ylab = colnames(DF)[i])
+}
+```
+
+```{r}
+log_result = function(callback, separate=F){
+  log = NA
+  is_init = F
+  for(i in 1:(ncol(DF)-1)){
+    if(separate){
+      vals = callback(DF0[,i],DF1[,i])
+    }else{
+      vals = callback(DF[,i])
+    }
+    if(!is_init){
+      log = vals
+      is_init = T
+    }else{
+      log = rbind(log, vals)
+    }
+  }
+
+  log = as.data.frame(log)
+  row.names(log) = colnames(DF)[1:(ncol(DF)-1)]
+  return(log)
+}
+
+bootstrap = function(x, n, alpha, callback){
+  resamples = rep(0,n)
+  for(i in 1:n){
+    resamples[i] = callback(sample(x, replace=T))
+  }
+  resamples = sort(resamples)
+  return(c(mean(resamples), resamples[round(n*alpha/2)], resamples[round(n*(1-alpha/2))]))
+}
+
+two_sample_bootstrap = function(x0, x1, n, alpha, callback){
+  resamples = rep(0,n)
+  x0_null = x0 - callback(x0) + callback(c(x0,x1))
+  x1_null = x1 - callback(x1) + callback(c(x0,x1))
+  for(i in 1:n){
+    resamples[i] = callback(sample(x0_null, replace=T))-callback(sample(x1_null, replace=T)) 
+  }
+  p_val = sum(abs(resamples) >= abs(callback(x0)-callback(x1)))/n
+  r = c(mean(resamples), p_val)
+  names(r) = c("mean diff under null", "p")
+  return(r)
+}
+
+
+
+monte_carlo_permutation = function(v0, v1, statistic, nsim=10000){
+  labels = c(rep(0,length(v0)), rep(1,length(v1)))
+  data = c(v0,v1)
+  statistics = rep(0, nsim)
+  for(i in 1:nsim){
+    relabeled = sample(labels)
+    g0 = data[relabeled == 0]
+    g1 = data[relabeled == 1]
+    statistics[i] = statistic(g0,g1)
+  }
+  true_stat = statistic(v0,v1)
+  p_val = length(statistics[statistics >= abs(true_stat) | 
+                            statistics <= -abs(true_stat)])/nsim
+  r = c(true_stat, mean(statistics), p_val)
+  names(r) = c("Sample Statistic", "Mean Permutation Statistic", "p")
+  return(r)
+}
+
+median_diff = function(x,y){
+  return(median(x)-median(y))
+}
+
+mean_diff = function(x,y){
+  return(mean(x)-mean(y)) 
+}
+```
+From the plots, it seems that Deg. of Formalization have some significant difference in median (and possibly mean), and Avg. Stakeholder Involvement could possibly have differences in median between the two groups.
+
+Appropriate p-values.
+Control the overall false discovery rate to 0.05.
+With 4 variables, adjust alpha from 0.05 to 
+P(false discovery) = 0.05
+P(at least 1 false discovery among 4 variables) = 0.05
+1 - P(no false discovery among 4 variables) = 0.05
+[P(no false discovery for 1 variable)]^4 = 0.95
+1 - alpha = 0.95^(1/4)
+`r  alpha = 1-0.95^(1/4)`
+
+Part 1.1 Test of Difference of Medians
+```{r warning=FALSE}
+alpha = 1-0.95^(1/4)
+# Wilcoxon test
+med_diff_test_wilc = function(df0,df1){
+  r = wilcox.test(df0,df1, exact=F, correct=T, conf.int=T, conf.level=1-alpha)
+  r = (c(r$p.value, r$conf.int[1], r$conf.int[2]))
+  names(r) = c("p-value", "lower bound", "upper bound")
+  return(r)
+}
+log_result(med_diff_test_wilc,separate=T)
+# Bootstrap median differences
+med_diff_test_boot = function(df0,df1){
+  return(two_sample_bootstrap(df0,df1, 10000, alpha, median))
+}
+log_result(med_diff_test_boot,separate=T)
+```
+One could potentially suggest the permutation test, where the group labels are permuted, and the p-value would be computed based on the % of permuted data that has test statistic as extreme as the test statistic of the true sample. However, permutation test is procedurally more suited in experimental settings, where treatment group is assigned to observations and the null hypothesis assumes the group label has no effect on the test statistic. In contrast, this set of data is drawn from an observational study, 
+
+Part 1.2 Test of Difference of Means
+We conduct the bootstrap mean difference test and permutation test for difference of means. Note that Wilcoxon test is not applicable for testing difference in means.
+```{r warning=FALSE}
+# Bootstrap mean differences
+mean_diff_test_boot = function(df0,df1){
+  return(two_sample_bootstrap(df0,df1, 10000, alpha, mean))
+}
+log_result(mean_diff_test_boot,separate=T)
+```
+
+Part 2.1 Confidence Intervals of Medians
+Bootstrap CI of medians
+```{r warning=FALSE}
+ci_median = function(x){
+  x0 = x[1:nrow(DF0)]
+  x1 = x[-c(1:nrow(DF0))]
+  true_med_0 = median(x0)
+  true_med_1 = median(x1)
+  r0 = true_med_0 + c(0,bootstrap(x0, 10000, alpha, function(vec) median(vec)-true_med_0)[2:3])
+  r1 = true_med_1 + c(0,bootstrap(x1, 10000, alpha, function(vec) median(vec)-true_med_1)[2:3])
+  r = c(r0,r1)
+  names(r) = c("median (G0)","lower (G0)", "upper (G0)", "median (G1)","lower (G1)", "upper (G1)")
+  return(r)
+}
+log_result(ci_median)
+```
+Part 2.1 Confidence Intervals of Means
+Bootstrap CI of means
+```{r warning=FALSE}
+ci_mean = function(x){
+  x0 = x[1:nrow(DF0)]
+  x1 = x[-c(1:nrow(DF0))]
+  true_mu_0 = mean(x0)
+  true_mu_1 = mean(x1)
+  r0 = true_mu_0 + c(0,bootstrap(x0, 10000, alpha, function(vec) mean(vec)-true_mu_0)[2:3])
+  r1 = true_mu_1 + c(0,bootstrap(x1, 10000, alpha, function(vec) mean(vec)-true_mu_1)[2:3])
+  r = c(r0,r1)
+  names(r) = c("mean (G0)","lower (G0)", "upper (G0)", "mean (G1)","lower (G1)", "upper (G1)")
+
+  return(r)
+}
+log_result(ci_mean)
+```
+
+Part 3. Test of Homogeneity
+```{r warning=FALSE}
+contingency = function(df0, df1, i){
+  t0 = table(df0[,i]); t1 = table(df1[,i])
+  freqs = union(names(t0),names(t1))
+  tab = matrix(0,length(freqs),ncol=2)
+  rownames(tab) = freqs
+  for(row in 1:length(freqs)){
+    arr0 = t0[names(t0) == freqs[row]]
+    arr1 = t1[names(t1) == freqs[row]]
+    if(length(arr0) == 0) {tab[row,1] = 0} else {tab[row,1] = arr0}
+    if(length(arr1) == 0) {tab[row,2] = 0} else {tab[row,2] = arr1}
+  }
+  colnames(tab) = c("Gp 0", "Gp 1")
+  return(tab)
+}
+homogeneity_test = function(i){
+  r = chisq.test(contingency(DF0, DF1, i))
+  r = c(r$statistic, r$p.value)
+  names(r) = c("X-sq", "p-value")
+  return(r)
+}
+ks_test = function(i){
+  r = ks.boot(DF0[,i],DF1[,i], nboot=10000)
+  r = c(r$ks$statistic, r$ks.boot.pvalue)
+  names(r) = c("D", "p-value")
+  return(r)
+}
+homogeneity_log = rbind(homogeneity_test(1),homogeneity_test(2),
+                        homogeneity_test(3),homogeneity_test(4))
+rownames(homogeneity_log) = colnames(DF[1:4])
+homogeneity_log
+
+# visualizing the results with association and mosaic plots
+library(vcd)
+# association and mosaic plots, conditioning on Performance Group
+for(i in c(1,3)){
+  tab = as.table(t(contingency(DF0, DF1, i)))
+  mosaic(tab, shade=T)
+  assoc(tab, shade=T)
+}
+plot(ecdf(DF0[,2]), sub="black: Group 0. red: Group 1", xlab="# of Quantitative Objectives", ylab="cdf", main=NA)
+lines(ecdf(DF1[,2]),col="red")
+plot(ecdf(DF0[,4]), sub="black: Group 0. red: Group 1", xlab="Avg. Involvement", ylab="cdf", main=NA)
+lines(ecdf(DF1[,4]),col="red")
+```
+
+While it is the Deg. of Formalization variable could be seen as categorical, the other 3 variables have strict intrinsic ordering; in addition, stakeholder involvement is continuous rather than discrete. The Kolmogorov-Smirnov test is more suited for this purpose. In addition, the bootstrap version of the KS test is better in our case due to the significant number of ties in our data, which makes sampling from a pooled emperical distribtuion more desirable.
+```{r}
+homogeneity_log
+ks_log = rbind(ks_test(1),ks_test(2),ks_test(3),ks_test(4))
+rownames(ks_log) = colnames(DF[1:4])
+ks_log
+```
+median polish shows potential multiplicative effects among factors
+```{r}
+medians = cbind(apply(DF0[,1:4],2,median),apply(DF1[,1:4],2,median))
+colnames(medians) = c("Gp 0", "Gp 1")
+medpolish(medians)
+plot(medpolish(medians))
+```
